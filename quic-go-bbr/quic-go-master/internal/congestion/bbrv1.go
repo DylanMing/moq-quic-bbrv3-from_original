@@ -240,3 +240,13 @@ func (b *BBRv1Sender) InRecovery() bool {
 func (b *BBRv1Sender) InSlowStart() bool {
 	return b.state == STARTUP
 }
+
+func (b *BBRv1Sender) GetStats() BBRv3StatsSnapshot {
+	return BBRv3StatsSnapshot{}
+}
+
+func (b *BBRv1Sender) SetStatsConfig(config *BBRv3StatsConfig) {
+}
+
+func (b *BBRv1Sender) StopStats() {
+}

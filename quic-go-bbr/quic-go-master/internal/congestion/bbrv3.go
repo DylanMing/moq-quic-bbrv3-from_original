@@ -243,6 +243,10 @@ type BBRv3Sender struct {
 
 	// Initial time
 	initTime           monotime.Time
+
+	// Statistics collection
+	stats              *BBRv3Stats
+	statsEnabled       bool
 }
 
 // Verify BBRv3Sender implements the interface
@@ -284,6 +288,59 @@ func NewBBRv3Sender(initialMaxDatagramSize protocol.ByteCount) *BBRv3Sender {
 	b.initPacingRate()
 	log.Printf("[BBRv3] Created new BBRv3 sender: initialCwnd=%d, minCwnd=%d, maxDatagramSize=%d", initialCwnd, minCwnd, initialMaxDatagramSize)
 	return b
+}
+
+// NewBBRv3SenderWithStats creates a new BBRv3 congestion controller with statistics collection
+func NewBBRv3SenderWithStats(initialMaxDatagramSize protocol.ByteCount, statsConfig *BBRv3StatsConfig) *BBRv3Sender {
+	b := NewBBRv3Sender(initialMaxDatagramSize)
+
+	if statsConfig != nil && statsConfig.Enabled {
+		b.stats = NewBBRv3Stats(statsConfig)
+		b.statsEnabled = true
+		b.stats.UpdateMinCwnd(b.minCwnd)
+		b.stats.UpdateCwnd(b.cwnd)
+		b.stats.UpdateSsthresh(protocol.ByteCount(^uint64(0) >> 1)) // Initially undefined
+		b.stats.Start()
+	}
+
+	return b
+}
+
+// SetStatsConfig sets or updates the statistics configuration
+func (b *BBRv3Sender) SetStatsConfig(config *BBRv3StatsConfig) {
+	if b.stats != nil {
+		b.stats.Stop()
+	}
+
+	if config != nil && config.Enabled {
+		b.stats = NewBBRv3Stats(config)
+		b.statsEnabled = true
+		b.stats.UpdateMinCwnd(b.minCwnd)
+		b.stats.UpdateCwnd(b.cwnd)
+		b.stats.UpdateSsthresh(protocol.ByteCount(^uint64(0) >> 1))
+		b.stats.UpdateMaxBandwidth(b.maxBw)
+		b.stats.UpdatePacingRate(b.pacingRate)
+		b.stats.UpdateState(b.stateName())
+		b.stats.Start()
+	} else {
+		b.stats = nil
+		b.statsEnabled = false
+	}
+}
+
+// GetStats returns the current statistics snapshot
+func (b *BBRv3Sender) GetStats() BBRv3StatsSnapshot {
+	if b.stats != nil {
+		return b.stats.GetStats()
+	}
+	return BBRv3StatsSnapshot{}
+}
+
+// StopStats stops the statistics collection
+func (b *BBRv3Sender) StopStats() {
+	if b.stats != nil {
+		b.stats.Stop()
+	}
 }
 
 // Name returns the name of the congestion control algorithm
@@ -1160,6 +1217,16 @@ func (b *BBRv3Sender) HasPacingBudget(now monotime.Time) bool {
 func (b *BBRv3Sender) OnPacketSent(sentTime monotime.Time, bytesInFlight protocol.ByteCount, packetNumber protocol.PacketNumber, bytes protocol.ByteCount, isRetransmittable bool) {
 	b.sentTimes[packetNumber] = sentTime
 
+	// Update statistics
+	if b.statsEnabled && b.stats != nil {
+		b.stats.OnPacketSent(bytes)
+		b.stats.UpdateBytesInFlight(bytesInFlight)
+		b.stats.UpdatePacingRate(b.pacingRate)
+		b.stats.UpdateMaxBandwidth(b.maxBw)
+		b.stats.SetSlowStart(b.InSlowStart())
+		b.stats.SetRecovery(b.InRecovery())
+	}
+
 	// Calculate next send time based on pacing rate
 	if b.pacingRate > 0 && bytes > 0 {
 		pacingDelay := time.Duration(float64(bytes) * float64(time.Second) / float64(b.pacingRate))
@@ -1184,8 +1251,9 @@ func (b *BBRv3Sender) MaybeExitSlowStart() {}
 // OnPacketAcked is called when a packet is ACKed
 func (b *BBRv3Sender) OnPacketAcked(number protocol.PacketNumber, ackedBytes protocol.ByteCount, priorInFlight protocol.ByteCount, eventTime monotime.Time) {
 	sentTime, ok := b.sentTimes[number]
+	var rtt time.Duration
 	if ok {
-		rtt := time.Duration(eventTime - sentTime)
+		rtt = time.Duration(eventTime - sentTime)
 		if rtt > 0 {
 			b.updateMinRtt(eventTime, rtt)
 		}
@@ -1200,6 +1268,22 @@ func (b *BBRv3Sender) OnPacketAcked(number protocol.PacketNumber, ackedBytes pro
 			number, ackedBytes, priorInFlight, b.stateName(), b.cwnd, b.minRtt, b.maxBw)
 	}
 
+	// Update statistics
+	if b.statsEnabled && b.stats != nil {
+		b.stats.OnPacketAcked(ackedBytes)
+		b.stats.UpdateBytesInFlight(priorInFlight)
+		b.stats.UpdateCwnd(b.cwnd)
+		b.stats.UpdatePacingRate(b.pacingRate)
+		b.stats.UpdateMaxBandwidth(b.maxBw)
+		b.stats.UpdateCurrentBandwidth(b.bw)
+		b.stats.UpdateState(b.stateName())
+		if rtt > 0 {
+			b.stats.UpdateRtt(rtt)
+		}
+		b.stats.SetSlowStart(b.InSlowStart())
+		b.stats.SetRecovery(b.InRecovery())
+	}
+
 	// Update ack state (simplified)
 	// In full implementation, would track ackState properly
 }
@@ -1208,6 +1292,13 @@ func (b *BBRv3Sender) OnPacketAcked(number protocol.PacketNumber, ackedBytes pro
 func (b *BBRv3Sender) OnCongestionEvent(number protocol.PacketNumber, lostBytes protocol.ByteCount, priorInFlight protocol.ByteCount) {
 	if lostBytes > 0 && b.lossEventsInRound < 0xf {
 		b.lossEventsInRound++
+	}
+
+	// Update statistics for lost bytes
+	if b.statsEnabled && b.stats != nil {
+		b.stats.OnBytesLost(lostBytes)
+		b.stats.UpdateBytesInFlight(priorInFlight)
+		b.stats.SetRecovery(b.InRecovery())
 	}
 
 	// Handle high loss in startup
@@ -1219,6 +1310,11 @@ func (b *BBRv3Sender) OnCongestionEvent(number protocol.PacketNumber, lostBytes 
 // OnRetransmissionTimeout handles RTO
 func (b *BBRv3Sender) OnRetransmissionTimeout(packetsRetransmitted bool) {
 	if packetsRetransmitted {
+		// Update statistics
+		if b.statsEnabled && b.stats != nil {
+			b.stats.OnRetransmission()
+		}
+
 		// Reset but preserve key state
 		oldMinRtt := b.minRtt
 		oldMinRttStamp := b.minRttStamp

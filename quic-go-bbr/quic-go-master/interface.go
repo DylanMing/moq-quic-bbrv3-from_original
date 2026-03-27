@@ -241,6 +241,9 @@ type SendAlgorithmWithDebugInfos interface {
 	InSlowStart() bool
 	InRecovery() bool
 	GetCongestionWindow() ByteCount
+	GetStats() congestion.BBRv3StatsSnapshot
+	SetStatsConfig(config *congestion.BBRv3StatsConfig)
+	StopStats()
 }
 
 func NewTime() monotime.Time {
@@ -255,4 +258,21 @@ func NewBBRv1(conf *Config) SendAlgorithmWithDebugInfos {
 func NewBBRv3(conf *Config) SendAlgorithmWithDebugInfos {
 	conf = populateConfig(conf)
 	return congestion.NewBBRv3Sender(protocol.ByteCount(conf.InitialPacketSize))
+}
+
+// BBRv3StatsConfig configures BBRv3 statistics collection
+type BBRv3StatsConfig = congestion.BBRv3StatsConfig
+
+// BBRv3StatsSnapshot is a snapshot of BBRv3 statistics
+type BBRv3StatsSnapshot = congestion.BBRv3StatsSnapshot
+
+// DefaultBBRv3StatsConfig returns a default statistics configuration
+func DefaultBBRv3StatsConfig() *BBRv3StatsConfig {
+	return congestion.DefaultBBRv3StatsConfig()
+}
+
+// NewBBRv3WithStats creates a new BBRv3 congestion controller with statistics collection
+func NewBBRv3WithStats(conf *Config, statsConfig *BBRv3StatsConfig) SendAlgorithmWithDebugInfos {
+	conf = populateConfig(conf)
+	return congestion.NewBBRv3SenderWithStats(protocol.ByteCount(conf.InitialPacketSize), statsConfig)
 }

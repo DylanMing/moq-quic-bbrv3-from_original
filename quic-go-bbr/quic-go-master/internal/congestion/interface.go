@@ -24,4 +24,7 @@ type SendAlgorithmWithDebugInfos interface {
 	InSlowStart() bool
 	InRecovery() bool
 	GetCongestionWindow() protocol.ByteCount
+	GetStats() BBRv3StatsSnapshot
+	SetStatsConfig(config *BBRv3StatsConfig)
+	StopStats()
 }

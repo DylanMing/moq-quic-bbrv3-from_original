@@ -167,6 +167,16 @@ func (c *CubicSender) InSlowStart() bool {
 	return c.GetCongestionWindow() < c.slowStartThreshold
 }
 
+func (c *CubicSender) GetStats() BBRv3StatsSnapshot {
+	return BBRv3StatsSnapshot{}
+}
+
+func (c *CubicSender) SetStatsConfig(config *BBRv3StatsConfig) {
+}
+
+func (c *CubicSender) StopStats() {
+}
+
 func (c *CubicSender) GetCongestionWindow() protocol.ByteCount {
 	return c.congestionWindow
 }
